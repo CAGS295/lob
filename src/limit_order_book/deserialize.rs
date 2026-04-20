@@ -95,6 +95,8 @@ mod test {
             },
             first_update_id: 157,
             last_update_id: 160,
+            previous_update_id: None,
+            transaction_time: None,
             bids: vec![
                 PriceAndQuantity(27826.1, 0.69556),
                 PriceAndQuantity(27826.89, 2.50099),

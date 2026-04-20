@@ -146,6 +146,10 @@ pub struct DepthUpdate {
     pub first_update_id: u64,
     #[serde(alias = "u")]
     pub last_update_id: u64,
+    #[serde(alias = "pu", default)]
+    pub previous_update_id: Option<u64>,
+    #[serde(alias = "T", default)]
+    pub transaction_time: Option<u64>,
     #[serde(alias = "b")]
     pub bids: Bids,
     #[serde(alias = "a")]
@@ -158,8 +162,11 @@ impl Display for DepthUpdate {
         write!(f, "{}, ", self.event)?;
         write!(
             f,
-            "Updates: [{},{}], ",
-            self.first_update_id, self.last_update_id
+            "Updates: [{},{},pu:{:?}], T:{:?}, ",
+            self.first_update_id,
+            self.last_update_id,
+            self.previous_update_id,
+            self.transaction_time,
         )?;
         write!(f, "bids: {} ", self.bids)?;
         write!(f, "asks: {}", self.asks)
@@ -167,11 +174,21 @@ impl Display for DepthUpdate {
 }
 
 impl DepthUpdate {
-    /// A valid update [a, b] should overlap or at least
-    /// not gap between the last update id and the new update range.
+    /// Returns true if this update should be skipped given the book's current update_id.
+    ///
+    /// For spot streams (no `pu` field), update IDs are per-symbol and contiguous,
+    /// so both stale updates and forward gaps are rejected.
+    ///
+    /// For futures streams (`pu` present), update IDs are global across all symbols,
+    /// so forward gaps are expected and only stale updates are rejected.
     pub fn skip_update(&self, last_book_id: u64) -> bool {
         let (a, b) = (self.first_update_id, self.last_update_id);
-        last_book_id + 1 < a || b + 1 < last_book_id
+
+        let stale = b + 1 < last_book_id;
+
+        let gap = self.previous_update_id.is_none() && last_book_id + 1 < a;
+
+        stale || gap
     }
 }
 
@@ -180,12 +197,14 @@ mod test {
     use super::DepthUpdate;
 
     #[test]
-    fn skip_update_works() {
+    fn skip_update_spot() {
         let update = DepthUpdate {
             first_update_id: 2,
             last_update_id: 3,
             ..Default::default()
         };
+        assert!(update.previous_update_id.is_none());
+
         // coming from the left there is a gap; skip.
         assert!(update.skip_update(0));
         // continuous coming from the left, pass
@@ -194,9 +213,26 @@ mod test {
         assert!(!update.skip_update(2));
         // overlap coming from the right, pass
         assert!(!update.skip_update(3));
-        //continuity coming for the right at the second bound; pass
+        // continuity coming for the right at the second bound; pass
         assert!(!update.skip_update(4));
         // gap coming from the right; skip
         assert!(update.skip_update(5));
+    }
+
+    #[test]
+    fn skip_update_futures_allows_forward_gaps() {
+        let update = DepthUpdate {
+            first_update_id: 200,
+            last_update_id: 300,
+            previous_update_id: Some(100),
+            ..Default::default()
+        };
+
+        // forward gap is allowed for futures (global IDs, other symbols fill the gap)
+        assert!(!update.skip_update(100));
+        // overlap, pass
+        assert!(!update.skip_update(250));
+        // stale; skip
+        assert!(update.skip_update(500));
     }
 }
