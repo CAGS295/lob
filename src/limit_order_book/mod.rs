@@ -1,5 +1,8 @@
 use super::{Asks, Bids};
-use crate::ops::{update_strategies::ReplaceOrRemove, Update};
+use crate::ops::{
+    update_strategies::{AggregateOrCreate, ReplaceOrRemove},
+    Update,
+};
 use crate::PriceAndQuantity;
 #[cfg(feature = "event")]
 use event::Event;
@@ -124,6 +127,24 @@ impl LimitOrderBook {
         self.asks.extend(asks.iter().copied());
         self.update_id = *update_id;
     }
+
+    /// Merge multiple books into one, summing quantities at duplicate price levels.
+    ///
+    /// Use this for cross-source aggregation (e.g. spot + futures on the same instrument).
+    /// Each side stays sorted; `update_id` is the max across inputs.
+    pub fn merge_aggregate(books: &[Self]) -> Self {
+        let mut out = Self::new();
+        for book in books {
+            for bid in book.bids.iter() {
+                Update::<AggregateOrCreate>::process(&mut out.bids, *bid);
+            }
+            for ask in book.asks.iter() {
+                Update::<AggregateOrCreate>::process(&mut out.asks, *ask);
+            }
+        }
+        out.update_id = books.iter().map(|b| b.update_id).max().unwrap_or(0);
+        out
+    }
 }
 
 impl Display for LimitOrderBook {
@@ -194,7 +215,7 @@ impl DepthUpdate {
 
 #[cfg(test)]
 mod test {
-    use super::DepthUpdate;
+    use super::{DepthUpdate, LimitOrderBook};
 
     #[test]
     fn skip_update_spot() {
@@ -217,6 +238,32 @@ mod test {
         assert!(!update.skip_update(4));
         // gap coming from the right; skip
         assert!(update.skip_update(5));
+    }
+
+    #[test]
+    fn merge_aggregate_sums_duplicate_prices() {
+        let b1: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":1,"bids":[["100.0","1.0"]],"asks":[["101.0","2.0"]]}"#,
+        )
+        .unwrap();
+        let b2: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":2,"bids":[["100.0","3.0"]],"asks":[["101.0","1.0"]]}"#,
+        )
+        .unwrap();
+        let merged = LimitOrderBook::merge_aggregate(&[b1, b2]);
+        assert_eq!(merged.update_id, 2);
+        assert_eq!(merged.bids.len(), 1);
+        assert_eq!(merged.asks.len(), 1);
+        assert_eq!(format!("{}", merged.bids), "[100:4]");
+        assert_eq!(format!("{}", merged.asks), "[101:3]");
+    }
+
+    #[test]
+    fn merge_aggregate_empty() {
+        let merged = LimitOrderBook::merge_aggregate(&[]);
+        assert_eq!(merged.update_id, 0);
+        assert!(merged.bids.is_empty());
+        assert!(merged.asks.is_empty());
     }
 
     #[test]
