@@ -128,21 +128,35 @@ impl LimitOrderBook {
         self.update_id = *update_id;
     }
 
+    /// Fold one book into `self`, summing quantities at duplicate price levels.
+    ///
+    /// `update_id` becomes the max of both books. Use for incremental cross-source merge
+    /// without cloning every source snapshot.
+    pub fn merge_into(&mut self, other: &Self) {
+        self.update_id = self.update_id.max(other.update_id);
+        for bid in other.bids.iter() {
+            Update::<AggregateOrCreate>::process(&mut self.bids, *bid);
+        }
+        for ask in other.asks.iter() {
+            Update::<AggregateOrCreate>::process(&mut self.asks, *ask);
+        }
+    }
+
     /// Merge multiple books into one, summing quantities at duplicate price levels.
     ///
     /// Use this for cross-source aggregation (e.g. spot + futures on the same instrument).
     /// Each side stays sorted; `update_id` is the max across inputs.
-    pub fn merge_aggregate(books: &[Self]) -> Self {
+    ///
+    /// Accepts any iterator of book references so callers can merge read-side snapshots
+    /// without cloning every source book.
+    pub fn merge_aggregate<'a, I>(books: I) -> Self
+    where
+        I: IntoIterator<Item = &'a Self>,
+    {
         let mut out = Self::new();
         for book in books {
-            for bid in book.bids.iter() {
-                Update::<AggregateOrCreate>::process(&mut out.bids, *bid);
-            }
-            for ask in book.asks.iter() {
-                Update::<AggregateOrCreate>::process(&mut out.asks, *ask);
-            }
+            out.merge_into(book);
         }
-        out.update_id = books.iter().map(|b| b.update_id).max().unwrap_or(0);
         out
     }
 }
@@ -264,6 +278,39 @@ mod test {
         assert_eq!(merged.update_id, 0);
         assert!(merged.bids.is_empty());
         assert!(merged.asks.is_empty());
+    }
+
+    #[test]
+    fn merge_into_sums_duplicate_prices() {
+        let mut out: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":1,"bids":[["100.0","1.0"]],"asks":[["101.0","2.0"]]}"#,
+        )
+        .unwrap();
+        let other: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":2,"bids":[["100.0","3.0"]],"asks":[["101.0","1.0"]]}"#,
+        )
+        .unwrap();
+        out.merge_into(&other);
+        assert_eq!(out.update_id, 2);
+        assert_eq!(format!("{}", out.bids), "[100:4]");
+        assert_eq!(format!("{}", out.asks), "[101:3]");
+    }
+
+    #[test]
+    fn merge_aggregate_accepts_borrowed_refs() {
+        let b1: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":1,"bids":[["100.0","1.0"]],"asks":[["101.0","2.0"]]}"#,
+        )
+        .unwrap();
+        let b2: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":2,"bids":[["100.0","3.0"]],"asks":[["101.0","1.0"]]}"#,
+        )
+        .unwrap();
+        let refs = [&b1, &b2];
+        let merged = LimitOrderBook::merge_aggregate(refs.iter().copied());
+        assert_eq!(merged.update_id, 2);
+        assert_eq!(format!("{}", merged.bids), "[100:4]");
+        assert_eq!(format!("{}", merged.asks), "[101:3]");
     }
 
     #[test]
