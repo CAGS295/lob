@@ -128,6 +128,18 @@ impl LimitOrderBook {
         self.update_id = *update_id;
     }
 
+    /// Merge `other` into `self`, summing quantities at duplicate price levels.
+    ///
+    /// Each side stays sorted. Does not update `update_id`; callers set that separately when needed.
+    pub fn merge_aggregate_absorb(&mut self, other: &Self) {
+        for bid in other.bids.iter() {
+            Update::<AggregateOrCreate>::process(&mut self.bids, *bid);
+        }
+        for ask in other.asks.iter() {
+            Update::<AggregateOrCreate>::process(&mut self.asks, *ask);
+        }
+    }
+
     /// Merge multiple books into one, summing quantities at duplicate price levels.
     ///
     /// Use this for cross-source aggregation (e.g. spot + futures on the same instrument).
@@ -135,12 +147,7 @@ impl LimitOrderBook {
     pub fn merge_aggregate(books: &[Self]) -> Self {
         let mut out = Self::new();
         for book in books {
-            for bid in book.bids.iter() {
-                Update::<AggregateOrCreate>::process(&mut out.bids, *bid);
-            }
-            for ask in book.asks.iter() {
-                Update::<AggregateOrCreate>::process(&mut out.asks, *ask);
-            }
+            out.merge_aggregate_absorb(book);
         }
         out.update_id = books.iter().map(|b| b.update_id).max().unwrap_or(0);
         out
@@ -256,6 +263,24 @@ mod test {
         assert_eq!(merged.asks.len(), 1);
         assert_eq!(format!("{}", merged.bids), "[100:4]");
         assert_eq!(format!("{}", merged.asks), "[101:3]");
+    }
+
+    #[test]
+    fn merge_aggregate_absorb_matches_merge_aggregate() {
+        let b1: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":1,"bids":[["100.0","1.0"]],"asks":[["101.0","2.0"]]}"#,
+        )
+        .unwrap();
+        let b2: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":2,"bids":[["100.0","3.0"]],"asks":[["101.0","1.0"]]}"#,
+        )
+        .unwrap();
+        let expected = LimitOrderBook::merge_aggregate(&[b1.clone(), b2.clone()]);
+        let mut absorbed = LimitOrderBook::new();
+        absorbed.merge_aggregate_absorb(&b1);
+        absorbed.merge_aggregate_absorb(&b2);
+        absorbed.update_id = 2;
+        assert_eq!(absorbed, expected);
     }
 
     #[test]
