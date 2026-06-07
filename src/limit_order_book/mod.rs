@@ -128,6 +128,18 @@ impl LimitOrderBook {
         self.update_id = *update_id;
     }
 
+    /// Overwrite `self` with a snapshot of `other` (full replace, not aggregate).
+    ///
+    /// Copies `update_id` and both sides from `other` without requiring the caller to
+    /// clone `other` first. Reuses existing `bids` / `asks` capacity when possible.
+    pub fn replace_from(&mut self, other: &Self) {
+        self.update_id = other.update_id;
+        self.bids.clear();
+        self.bids.extend(other.bids.iter().copied());
+        self.asks.clear();
+        self.asks.extend(other.asks.iter().copied());
+    }
+
     /// Fold one book into `self`, summing quantities at duplicate price levels.
     ///
     /// `update_id` becomes the max of both books. Use for incremental cross-source merge
@@ -278,6 +290,22 @@ mod test {
         assert_eq!(merged.update_id, 0);
         assert!(merged.bids.is_empty());
         assert!(merged.asks.is_empty());
+    }
+
+    #[test]
+    fn replace_from_overwrites_previous_levels() {
+        let mut out: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":1,"bids":[["100.0","1.0"],["99.0","2.0"]],"asks":[["101.0","2.0"]]}"#,
+        )
+        .unwrap();
+        let other: LimitOrderBook = serde_json::from_str(
+            r#"{"lastUpdateId":3,"bids":[["100.0","5.0"]],"asks":[["102.0","1.0"]]}"#,
+        )
+        .unwrap();
+        out.replace_from(&other);
+        assert_eq!(out.update_id, 3);
+        assert_eq!(format!("{}", out.bids), "[100:5]");
+        assert_eq!(format!("{}", out.asks), "[102:1]");
     }
 
     #[test]
