@@ -132,9 +132,11 @@ impl LimitOrderBook {
     ///
     /// Use this for cross-source aggregation (e.g. spot + futures on the same instrument).
     /// Each side stays sorted; `update_id` is the max across inputs.
-    pub fn merge_aggregate(books: &[Self]) -> Self {
+    pub fn merge_aggregate<'a>(books: impl IntoIterator<Item = &'a Self>) -> Self {
         let mut out = Self::new();
+        let mut max_update_id = 0;
         for book in books {
+            max_update_id = max_update_id.max(book.update_id);
             for bid in book.bids.iter() {
                 Update::<AggregateOrCreate>::process(&mut out.bids, *bid);
             }
@@ -142,7 +144,7 @@ impl LimitOrderBook {
                 Update::<AggregateOrCreate>::process(&mut out.asks, *ask);
             }
         }
-        out.update_id = books.iter().map(|b| b.update_id).max().unwrap_or(0);
+        out.update_id = max_update_id;
         out
     }
 }
